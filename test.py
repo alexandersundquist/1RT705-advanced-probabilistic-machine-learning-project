@@ -400,7 +400,6 @@ Students: implement all parts in this section (priors, likelihoods, etc.)
 These are required before any inference method can be attempted.
 """
 
-
 class frozen_prior:
     # Placeholder for the prior distribution.
     # Hint: you may want to add input parameters to these methods.
@@ -413,22 +412,21 @@ class frozen_prior:
         self.alpha_lambda = alpha_lambda
         self.theta_lambda = theta_lambda
     
-    def rvs(self):
-        s_sample_from_gamma = np.random.gamma(shape=self.alpha_s, scale=self.theta_s, size=1)                    # Sample from S_0 gamma distribution
-        lambda_1_from_gamma = np.random.gamma(shape=self.alpha_lambda, scale=self.theta_lambda)           # Sample from lambda gamma distribution
-        lambda_2_from_gamma = np.random.gamma(shape=self.alpha_lambda, scale=self.theta_lambda)           # Sample from lambda gamma distribution
-        lambda_3_from_gamma = np.random.gamma(shape=self.alpha_lambda, scale=self.theta_lambda)           # Sample from lambda gamma distribution
-
+    def rvs(self, size=None):
+        gamma_s = np.random.gamma(shape=self.alpha_s, scale=self.theta_s)                   # Sample from S_0 gamma distribution
+        gamma_lambda_1 = np.random.gamma(shape=self.alpha_lambda, scale=self.theta_lambda)            # Sample from lambda gamma distribution
+        gamma_lambda_2 = np.random.gamma(shape=self.alpha_lambda, scale=self.theta_lambda)            # Sample from lambda gamma distribution
+        gamma_lambda_3 = np.random.gamma(shape=self.alpha_lambda, scale=self.theta_lambda)            # Sample from lambda gamma distribution
         V = Rotation.random().as_euler('zxy', degrees=True)
-        return s_sample_from_gamma, lambda_1_from_gamma, lambda_2_from_gamma, lambda_3_from_gamma, V
+        return gamma_s, gamma_lambda_1, gamma_lambda_2, gamma_lambda_3, V
 
     def logpdf(self):
         #raise NotImplementedError
-        s_sample_from_gamma, lambda_1_from_gamma, lambda_2_from_gamma, lambda_3_from_gamma, V = self.rvs()
-        log_s = gamma.logpdf(s_sample_from_gamma, a=self.alpha_s, scale=self.theta_s)
-        log_lambda_1 = gamma.logpdf(lambda_1_from_gamma, a=self.alpha_lambda, scale=self.theta_lambda)
-        log_lambda_2 = gamma.logpdf(lambda_2_from_gamma, a=self.alpha_lambda, scale=self.theta_lambda)
-        log_lambda_3 = gamma.logpdf(lambda_3_from_gamma, a=self.alpha_lambda, scale=self.theta_lambda)
+        gamma_s, gamma_lambda_1, gamma_lambda_2, gamma_lambda_3, V = self.rvs()
+        log_s = gamma.logpdf(gamma_s, a=self.alpha_s, scale=self.theta_s)
+        log_lambda_1 = gamma.logpdf(gamma_lambda_1, a=self.alpha_lambda, scale=self.theta_lambda)
+        log_lambda_2 = gamma.logpdf(gamma_lambda_2, a=self.alpha_lambda, scale=self.theta_lambda)
+        log_lambda_3 = gamma.logpdf(gamma_lambda_3, a=self.alpha_lambda, scale=self.theta_lambda)
 
         log_V = 0.0   # uniform rotation prior ⇒ constant log-prob
 
@@ -438,273 +436,32 @@ class frozen_prior:
         log_s, log_lambda_1, log_lambda_2, log_lambda_3, log_V = self.logpdf()
         return log_s + log_lambda_1 + log_lambda_2 + log_lambda_3 + log_V
 
+#sample = frozen_prior(sigma=29, alpha_s=2, theta_s=500, alpha_lambda=4, theta_lambda=0.00025)
+
+#print(sample.prob_z())
+
+# Theoretical mean of lamba = 4*0.00025=0.001
+nmbr_samples = 3
+list_S_samples = []
+list_lambda_samples =[]
+list_V_samples = np.array([0,0,0])
+sample = frozen_prior(sigma=29, alpha_s=2, theta_s=500, alpha_lambda=4, theta_lambda=0.00025)
+
+print(range(nmbr_samples))
 
 
+for i in range(nmbr_samples):
+    gamma_s, gamma_lambda_1, gamma_lambda_2, gamma_lambda_3, V = sample.rvs()
+    list_S_samples.append(gamma_s)
+    list_lambda_samples.append(gamma_lambda_1)
+    list_V_samples =+ V
 
-class frozen_likelihood:
-    # Placeholder for the likelihood (with partial code provided).
-    # Hint: you may want to add input parameters to these methods.
-
-    def __init__(self, gtab):
-        self.gtab = gtab   # store gradient table with b-values and b-vectors
-
-        raise NotImplementedError
-
-    def logpdf(self, S0, evecs, evals):
-        S0 = np.atleast_1d(S0)        # ensure S0 is array-like
-        D = compute_D(evals, evecs)   # reconstruct diffusion tensor
-
-        # Build q from diffusion gradients (b-values & b-vectors),
-        # corresponds to the experimental setting x in the project instructions
-        q = np.sqrt(self.gtab.bvals[:, None]) * self.gtab.bvecs
-
-        # Model signal S given tensor D and baseline S0
-        S = S0[:, None] * np.exp( - np.einsum('...j, ijk, ...k->i...', q, D, q))
-        
-        raise NotImplementedError
-
-
-
-"""
-=============================================================================
-Posterior Approximations (need to be implemented)
-=============================================================================
-Students: implement these approximations, which are only used in the
-corresponding inference methods below:
-  - variational_posterior: used only for Variational Inference
-  - mvn_reparameterized: used only for Laplace Approximation
-
-They are NOT needed for Metropolis-Hastings or Importance Sampling.
-"""
-
-class variational_posterior:
-    # Placeholder for variational posterior approximation.
-    # Hint: you may want to add input parameters to these methods.
-    # The score() method is already implemented and can be used later
-    # when implementing inference (with REINFORCE leave-one-out estimator).
-
-    def __init__(self):
-        raise NotImplementedError
-
-    def logpdf(self):
-        raise NotImplementedError
     
-    def rvs(self, size):
-        raise NotImplementedError
-
-        return S0_samples, evals_samples, evecs_samples
-
-    def score(self, S0, D):
-        # Combine score contributions from gamma and Wishart parts
-        score_wrt_log_shape, score_wrt_log_scale = self.gamma_score(S0)
-        score_wrt_theta, score_wrt_log_df = self.wishart_score(D)
-        return np.concatenate([
-            score_wrt_log_shape, score_wrt_log_scale, score_wrt_theta, score_wrt_log_df]
-        )
-
-    def gamma_score(self, x):
-        # Score function for gamma distribution
-        score_wrt_log_shape = (np.log(x / self.scale) - digamma(self.shape)) * self.shape
-        score_wrt_log_scale = (x / self.scale**2 - self.shape / self.scale) * self.scale
-        return score_wrt_log_shape, score_wrt_log_scale
-
-    def wishart_score(self, D):
-        # Score function for Wishart distribution
-        W = self.df * D
-        Sigma_inv = np.linalg.inv(self.Sigma)
-        score_wrt_Sigma = 0.5 * Sigma_inv @ (W - self.df * self.Sigma) @ Sigma_inv
-        score_wrt_theta = np.tensordot(
-            score_wrt_Sigma, grad_D_wrt_theta_at_D(self.Sigma), axes=([0,1], [0,1])
-        )
-        p = W.shape[0]
-        _, logdet_W = np.linalg.slogdet(W)
-        _, logdet_Sigma = np.linalg.slogdet(self.Sigma)
-        digamma_sum = np.sum([digamma((self.df + 1 - j) / 2.0) for j in range(1, p+1)])
-        score_wrt_log_df = ((self.df - 2) / 2) * (logdet_W - p * np.log(2) - logdet_Sigma - digamma_sum)
-        return score_wrt_theta, score_wrt_log_df
-
-
-class mvn_reparameterized:
-    # Placeholder for multivariate normal approximation.
-    # Hint: you may want to add input parameters to these methods.
-    
-    def __init__(self):
-        raise NotImplementedError
-    
-    def rvs(self, size):
-        raise NotImplementedError
-    
-        return S0_samples, evals_samples, evecs_samples
-
-
-"""
-=============================================================================
-Inference Methods (need to be implemented)
-=============================================================================
-Students: implement one method each (MH, IS, VI, or Laplace).
-Uses memoization to speed up repeated runs.
-"""
-
-@disk_memoize()
-def metropolis_hastings(n_samples, gamma_param, nu_param, plot_traces=False):
-    # Students: implement Metropolis-Hastings here.
-    # Before starting, make sure the prior and likelihood are implemented.
-    # Note: you may change, add, or remove input parameters depending on your design
-    # (e.g. pass initialization values like those prepared in main()).
-
-    raise NotImplementedError
-
-    return S0_samples, evals_samples, evecs_samples
-
-
-@disk_memoize()
-def importance_sampling(n_samples, gamma_param, nu_param):
-    # Students: implement Importance Sampling here.
-    # Before starting, make sure the prior and likelihood are implemented.
-    # Note: you may change, add, or remove input parameters depending on your design
-    # (e.g. pass initialization values like those prepared in main()).
-
-    raise NotImplementedError
-
-    return importance_weights, S0_samples, evals_samples, evecs_samples
-
-
-@disk_memoize()
-def variational_inference(max_iters, K, learning_rate):
-    # Students: implement Variational Inference here.
-    # Before starting, make sure the prior, likelihood and variational_posterior are implemented.
-    # Note: you may change, add, or remove input parameters depending on your design
-    # (e.g. pass initialization values like those prepared in main()).
-
-    raise NotImplementedError
-
-    return variational_posterior(...)
-
-
-@disk_memoize()
-def laplace_approximation():
-    # Students: implement the Laplace Approximation here.
-    # Before starting, make sure the prior, likelihood and mvn_reparameterized are implemented.
-    # Note: you may change, add, or remove input parameters depending on your design
-    # (e.g. pass initialization values like those prepared in main()).
-
-    raise NotImplementedError
-
-    return mvn_reparameterized(...)
+print(np.mean(list_S_samples))
+print(np.mean(list_lambda_samples))
+print(list_V_samples/nmbr_samples)
 
 
 
-"""
-=============================================================================
-Visualization & Experiment Runner
-=============================================================================
-Plotting function and the main() script to run experiments.
-"""
-
-def main():
-    # Initialize with preprocessed data and DTI point estimate
-    # (these values can be used as starting points for inference methods)
-    y, point_estimate, gtab = get_preprocessed_data(force_recompute=False)
-    S0_init, evals_init, evecs_init = point_estimate
-    D_init = compute_D(evals_init, evecs_init).squeeze()
-
-    # Find principal eigenvector from DTI estimate (for plotting)
-    evec_principal = evecs_init[:, 0]
-
-    # Set random seed and number of posterior samples
-    np.random.seed(0)
-    n_samples = 10000
-
-    # Run Metropolis–Hastings and plot results
-    S0_mh, evals_mh, evecs_mh = metropolis_hastings(force_recompute=False)
-    burn_in = 0
-    plot_results(S0_mh[burn_in:], evals_mh[burn_in:], evecs_mh[burn_in:, :, :], evec_principal, method="mh")
-
-    # Run Importance Sampling and plot results
-    w_is, S0_is, evals_is, evecs_is = importance_sampling(force_recompute=False)
-    plot_results(S0_is, evals_is, evecs_is, evec_principal, weights=w_is, method="is")
-
-    # Run Variational Inference and plot results
-    posterior_vi = variational_inference(force_recompute=False)
-    S0_vi, evals_vi, evecs_vi = posterior_vi.rvs(size=n_samples)
-    plot_results(S0_vi, evals_vi, evecs_vi, evec_principal, method="vi")
-
-    # Run Laplace Approximation and plot results
-    posterior_laplace = laplace_approximation(force_recompute=False)
-    S0_laplace, evals_laplace, evecs_laplace = posterior_laplace.rvs(size=n_samples)
-    plot_results(S0_laplace, evals_laplace, evecs_laplace, evec_principal, method="laplace")
-
-    print("Done.")
-
-
-def plot_results(S0, evals, evecs, evec_ref, weights=None, method=""):
-    """
-    Plot posterior results as histograms and save to file.
-
-    Creates histograms of baseline signal (S0), mean diffusivity (MD),
-    fractional anisotropy (FA), and the angle between estimated and
-    reference eigenvectors.
-
-    Parameters
-    ----------
-    S0 : ndarray
-        Sampled baseline signals.
-    evals : ndarray
-        Sampled eigenvalues of the diffusion tensor.
-    evecs : ndarray
-        Sampled eigenvectors of the diffusion tensor.
-    evec_ref : ndarray
-        Reference principal eigenvector (from point estimate).
-    weights : ndarray, optional
-        Importance weights for samples. Uniform if None.
-    method : str
-        Name of inference method (used in output filename).
-    """
-    
-    # Use uniform weights if none provided
-    if weights is None:
-        weights = np.ones_like(S0)
-        weights /= np.sum(weights)
-
-    # Choose number of bins based on sample size
-    n_bins = np.floor(np.sqrt(len(weights))).astype(int)
-
-    # Squeeze arrays for plotting
-    weights = weights.squeeze()
-    S0 = S0.squeeze()
-    md = dti.mean_diffusivity(evals).squeeze()
-    fa = dti.fractional_anisotropy(evals).squeeze()
-
-    # Compute acute angle between estimated and reference eigenvectors
-    angle = 360/(2*np.pi) * np.arccos(np.abs(np.dot(evecs[:, :, 2], evec_ref)))
-    
-    # Create 2x2 grid of histograms
-    fig, axes = plt.subplots(2, 2, figsize=(12, 12), sharey=False)
-
-    axes[0, 0].hist(S0, bins=n_bins, density=True, weights=weights, 
-                    alpha=0.7, color='red', edgecolor='black')
-    axes[0, 0].set_xlabel("S0")
-    axes[0, 0].set_ylabel("Density")
-
-    axes[0, 1].hist(md, bins=n_bins, density=True, weights=weights, 
-                    alpha=0.7, color='green', edgecolor='black')
-    axes[0, 1].set_xlabel("Mean diffusivity")
-    axes[0, 1].set_ylabel("Density")
-
-    axes[1, 0].hist(fa, bins=n_bins, density=True, weights=weights,
-                     alpha=0.7, color='blue', edgecolor='black')
-    axes[1, 0].set_xlabel("Fractional anisotropy")
-    axes[1, 0].set_ylabel("Density")
-
-    axes[1, 1].hist(angle, bins=n_bins, density=True, weights=weights, 
-                    alpha=0.7, color='magenta', edgecolor='black')
-    axes[1, 1].set_xlabel("Acute angle")
-    axes[1, 1].set_ylabel("Density")
-
-    # Adjust layout and save figure with method name
-    plt.tight_layout()
-    plt.savefig("results_{}.png".format(method), dpi=300, bbox_inches='tight')
-
-
-if __name__ == "__main__":
-    main()
+# Theoretical mean of S = 2*500=1000 
+# Theoretical mean of V = [0,0,0]

@@ -7,6 +7,7 @@ from functools import wraps
 
 # NumPy and Matplotlib: math and plotting
 import numpy as np
+from numpy.linalg import eig
 import matplotlib.pyplot as plt
 
 # SciPy: probability distributions, math functions, and optimization
@@ -122,7 +123,7 @@ def get_preprocessed_data():
     point_estimate = [S0, evals, evecs]
 
     # Return the raw voxel signal, point estimate, and gradient table
-    return S0, evals, evecs, y, point_estimate, gtab 
+    return y, point_estimate, gtab 
 
 
 
@@ -349,8 +350,7 @@ These are required before any inference method can be attempted.
 class frozen_prior:
     # Placeholder for the prior distribution.
     # Hint: you may want to add input parameters to these methods.
-
-   
+ 
     def __init__(self, sigma=29, alpha_s=2, theta_s=500,alpha_lam=4, theta_lam=2.5e-4):
         # Parameters
         self.sigma = sigma
@@ -359,8 +359,6 @@ class frozen_prior:
         self.alpha_lam = alpha_lam
         self.theta_lam = theta_lam
         
-        
-    
     def rvs(self, size=None):
         # Size = None makes it a scalar instead of a size 1 vector
         gamma_s = np.random.gamma(self.alpha_s, self.theta_s, size)
@@ -370,7 +368,6 @@ class frozen_prior:
         V = R.random()
         return V, gamma_s, gamma_lam_1, gamma_lam_2, gamma_lam_3 
         
-    
     def logpdf(self, gamma_s, gamma_lam_1,gamma_lam_2, gamma_lam_3, V=None):
         """
         x (gamma): The value at which to evaluate the probability density function.
@@ -387,30 +384,23 @@ class frozen_prior:
         logp_lam_2 = gamma.logpdf(gamma_lam_2, a=self.alpha_lam, scale=self.theta_lam)
         logp_lam_3 = gamma.logpdf(gamma_lam_3, a=self.alpha_lam, scale=self.theta_lam)
         
-
         # Rotation term (uniform over SO(3), constant, so log prob = 0)
         logp_V = 0.0  
         
-
         return logp_s + logp_lam_1 + logp_lam_2 + logp_lam_3 + logp_V
     
-
-
-
-   
     
 class frozen_likelihood:
     # Placeholder for the likelihood (with partial code provided).
     # Hint: you may want to add input parameters to these methods.
 
-    def __init__(self, gtab,y, point_estimate):
+    def __init__(self, gtab,y, point_estimate, variance):
         self.gtab = gtab   # store gradient table with b-values and b-vectors
         self.y = y # added yesterday
         self.point_estimate = point_estimate # added yesterday
+        self.variance = variance
        
-    
-
-    def logpdf(self, S0, evecs, evals, variance = 29 ):
+    def logpdf(self, S0, evecs, evals):
         S0 = np.atleast_1d(S0)        # ensure S0 is array-like
         D = compute_D(evals, evecs)   # reconstruct diffusion tensor
 
@@ -420,17 +410,15 @@ class frozen_likelihood:
 
         # Model signal S given tensor D and baseline S0
         S = S0[:, None] * np.exp( - np.einsum('...j, ijk, ...k->i...', q, D, q))
+        #print(f'bvals: {self.gtab.bvals}, bvecs: {self.gtab.bvecs}, q: {q}')
+        #print(f'S: {S}')
 
-        
-
-        logp = norm.logpdf(self.y, loc=S, scale=variance)
-
-    
+        logp = norm.logpdf(self.y, loc=S, scale=self.variance)
         
         return np.sum(logp)
 
 
-
+"""
 if __name__ == "__main__":
     
 
@@ -443,10 +431,10 @@ if __name__ == "__main__":
     #Frozen prior
     fp = frozen_prior(sigma=29, alpha_s=2, theta_s=500,alpha_lam=4, theta_lam=2.5e-4)
 
-    frozen_prior_loglik = fp.logpdf( S0, evals[0],evals[1], evals[2], V=None)
+    frozen_prior_loglik = fp.logpdf(S0, evals[0],evals[1], evals[2], V=None)
     print("Frozen Prior Log-likelihood:", frozen_prior_loglik)
     
-    """
+
     sampler = frozen_prior()
     # Draw one sample
     V, gs, gl1,gl2, gl3 = sampler.rvs()
@@ -460,9 +448,6 @@ if __name__ == "__main__":
     logp = sampler.logpdf(gs, gl1,gl2, gl3, V)
     print("Log PDF of sample:", logp)
 
-    """
-
-    """
     # Draw multiple samples
         for i in range(5):
         V, gs, gl1,gl2,gl3 = sampler.rvs()
@@ -470,16 +455,13 @@ if __name__ == "__main__":
 
         print(f"Sample {i+1}: gamma_s={gs:.3f}, gamma_lam_1={gl1:.6f}, gamma_lam_2={gl2:.6f}, gamma_lam_3={gl3:.6f} logp={logp:.3f}")
 
-   
-    """
 
-    
     #Frozen likeliehood
     fl = frozen_likelihood(gtab, y, point_estimate)
-    loglik = fl.logpdf(S0, evecs, evals)
-    print("frozen_likelihood Log-likelihood:", loglik)
-
-
+    frozen_likelihood_loglik = fl.logpdf(S0, evecs, evals)
+    print("frozen_likelihood Log-likelihood:", frozen_likelihood_loglik)
+"""
+    
 """
 =============================================================================
 Posterior Approximations (need to be implemented)
@@ -498,14 +480,36 @@ class variational_posterior:
     # The score() method is already implemented and can be used later
     # when implementing inference (with REINFORCE leave-one-out estimator).
 
-    def __init__(self):
-        raise NotImplementedError
+    def __init__(self, D, theta_1, theta_2, theta_9):
+        self.theta_3_to_8 = theta_from_D(D)
+        self.Sigma = D_from_theta(self.theta_3_to_8)
+        self.shape = np.exp(theta_1)
+        self.scale = np.exp(theta_2)
+        self.df = np.exp(theta_9) + 2
 
-    def logpdf(self):
-        raise NotImplementedError
+    def set_theta(self, theta):
+        self.shape = np.exp(theta[0])
+        self.scale = np.exp(theta[1])
+        self.Sigma = D_from_theta(theta[2:8])
+        self.df = np.exp(theta[8]) + 2
+
+    def logpdf(self, S0_samples, D_samples):
+        # raise NotImplementedError
+        log_S0 = gamma.logpdf(S0_samples, a=self.shape, scale=self.scale)
+        log_D = wishart.logpdf(D_samples, scale=self.Sigma, df=self.df)
+        #print(f'log_S0_sample = {log_S0}')
+        #print(f'log_D_sample = {log_D}')
+        return log_S0 + log_D
     
     def rvs(self, size):
-        raise NotImplementedError
+        # raise NotImplementedError
+        S0_samples = np.random.gamma(self.shape, self.scale, size=size)
+        D_samples = wishart.rvs(scale=self.Sigma, df=self.df, size=size)
+        evals_samples, evecs_samples = eig(D_samples)
+        #print(f'S0_sample = {S0_samples}')
+        #print(f'D_sample = {D_samples}')
+        #print(f'evals_sample = {evals_samples}')
+        #print(f'evecs_sample = {evecs_samples}')
 
         return S0_samples, evals_samples, evecs_samples
 
@@ -513,8 +517,12 @@ class variational_posterior:
         # Combine score contributions from gamma and Wishart parts
         score_wrt_log_shape, score_wrt_log_scale = self.gamma_score(S0)
         score_wrt_theta, score_wrt_log_df = self.wishart_score(D)
-        return np.concatenate([
-            score_wrt_log_shape, score_wrt_log_scale, score_wrt_theta, score_wrt_log_df]
+        #print(f'score_wrt_log_shape: {score_wrt_log_shape}')
+        #print(f'score_wrt_log_scale: {score_wrt_log_scale}')
+        #print(f'score_wrt_theta: {score_wrt_theta}')
+        #print(f'score_wrt_log_df: {score_wrt_log_df}')
+        return np.concatenate((
+            [score_wrt_log_shape], [score_wrt_log_scale], score_wrt_theta, [score_wrt_log_df])
         )
 
     def gamma_score(self, x):
@@ -537,7 +545,28 @@ class variational_posterior:
         digamma_sum = np.sum([digamma((self.df + 1 - j) / 2.0) for j in range(1, p+1)])
         score_wrt_log_df = ((self.df - 2) / 2) * (logdet_W - p * np.log(2) - logdet_Sigma - digamma_sum)
         return score_wrt_theta, score_wrt_log_df
+"""
+if __name__ == "__main__":
+    
+    # Input values for our r (location in the voxel)
+    S0, evals, evecs, y, point_estimate, gtab = get_preprocessed_data(force_recompute=True)
+    init_D = compute_D(evals,evecs).squeeze()
+    var_post = variational_posterior(init_D, 1, 1, 1)
+    S0_samples, D_samples = var_post.rvs()
+    var_post_logpdf = var_post.logpdf(S0_samples, D_samples)
+    print(f'Variational posterior log pdf: {var_post_logpdf}')
 
+    #Frozen prior
+    fp = frozen_prior(sigma=29, alpha_s=2, theta_s=500,alpha_lam=4, theta_lam=2.5e-4)
+
+    frozen_prior_loglik = fp.logpdf( S0, evals[0],evals[1], evals[2], V=None)
+    print("Frozen Prior Log-likelihood:", frozen_prior_loglik)
+        
+    #Frozen likeliehood
+    fl = frozen_likelihood(gtab, y, point_estimate)
+    frozen_likelihood_loglik = fl.logpdf(S0, evecs, evals)
+    print("frozen_likelihood Log-likelihood:", frozen_likelihood_loglik)
+"""
 
 class mvn_reparameterized:
     # Placeholder for multivariate normal approximation.
@@ -592,10 +621,143 @@ def variational_inference(max_iters, K, learning_rate):
     # Note: you may change, add, or remove input parameters depending on your design
     # (e.g. pass initialization values like those prepared in main()).
 
-    raise NotImplementedError
+    #raise NotImplementedError
 
-    return variational_posterior(...)
+    # Initialize data
+    y, point_estimate, gtab = get_preprocessed_data(force_recompute=True)
+    S0_init, evals_init, evecs_init = point_estimate
+    D_ref = compute_D(evals_init, evecs_init).squeeze() # Compute D from initial evals and evecs
+    nu = 8
+    theta_1 = 3
+    theta_2 = 3
+    theta_9 = 3
+    Sigma = D_ref
 
+    # Create array of theta values initialized by D_ref and theta 1, 2 and 9
+    theta = np.zeros(9)
+    theta[0] = theta_1
+    theta[1] = theta_2
+    theta_3_to_8 = theta_from_D(Sigma)
+    for i in range(len(theta_3_to_8)):
+        theta[i+2] = theta_3_to_8[i]
+    theta[8] = theta_9
+
+    # Adam parameteres
+    m = np.zeros(9)
+    v = np.zeros(9)
+    b1 = 0.9
+    b2 = 0.999
+    e = 1e-8
+    t = 0
+
+    # Create instance of variational posterior, frozen prior and frozen likelihood
+    var_posterior = variational_posterior(Sigma, theta_1, theta_2, theta_9) # Initialize variational posterior
+    fro_prior = frozen_prior() # Initialize frozen_prior class
+    fro_likelihood = frozen_likelihood(gtab, y, point_estimate, variance=29) # Initialize frozen_likelihood class
+
+    # print(f'gtab b-values {gtab.bvals}')
+    #print(f'S0_samples = {S0_samples}')
+    #print(f'D_samples = {D_ref}')
+    #print(f'Sigma = {Sigma}')
+    #print(f'evals_samples = {evals_samples}')
+    #print(f'evecs_samples = {evecs_samples}')
+
+    for SGD_iter in range(max_iters):
+        """
+        Do 'max_iters' iterations of sampling from prior,likelihood, and variational posterior,
+        calculate ELBO gradient and update theta parameters
+        """
+        t +=1
+        # Posterior must be updated when theta is updated (can do in var_posterior). Create set_theta function that you use in adam step
+
+        #print(f'Starting iteration {SGD_iter} of SGD')
+        # Draw z samples from variational posterior
+        S0_samples, evals_samples, evecs_samples = var_posterior.rvs(size=K)
+        D_samples = compute_D(evals_samples, evecs_samples)
+
+        # Sample K samples of frozen prior, frozen likelihood and variational posterior
+        log_prior_sample_list = np.zeros(K)
+        log_likelihood_sample_list = np.zeros(K)
+        log_var_post_sample_list = np.zeros(K)
+
+        for i in range(K): # Number of samples drawn
+            # Sample prior
+            log_prior_sample_list[i] =fro_prior.logpdf(S0_samples[i], evals_samples[i][0],evals_samples[i][1], evals_samples[i][2], V=None)
+            
+            # Sample likelihood
+            log_likelihood_sample_list[i] = fro_likelihood.logpdf(S0_samples[i], evecs_samples[i], evals_samples[i])
+
+            # Sample variational posterior
+            log_var_post_sample_list[i] = var_posterior.logpdf(S0_samples[i], D_samples[i])
+
+        #print(f'Log prior samples: {log_prior_sample_list}')
+        #print(f'Log likelihood samples: {log_likelihood_sample_list}')
+        #print(f'Log variational posterier samples: {log_var_post_sample_list}')
+        
+        # Compute log p(D,z) for each sample
+        #log_p_of_D_and_z = [likelihood + prior for likelihood, prior in zip(log_likelihood_sample_list, log_prior_sample_list)]
+        log_p_of_D_and_z = log_likelihood_sample_list + log_prior_sample_list
+        #print(f'PDF of D and z samples: {log_p_of_D_and_z}')
+        
+        # Compute f(z) for each sample
+        #f_z_samples = [p_D_z - p_q for p_D_z, p_q in zip(log_p_of_D_and_z, log_var_post_sample_list)]
+        f_z_samples = log_p_of_D_and_z - log_var_post_sample_list
+        #print(f'f(z) samples: {f_z_samples}')
+
+        # Estimate the gradient of ELBO using the REINFORCE leave-one-out estimator
+        elbo_grad = 0
+        for k in range(K):
+            current = f_z_samples[k]
+            others = (sum(f_z_samples) - current) / (K-1)
+            #print(f'S0_samples[k] {S0_samples[k]}')
+            #print(f'D_samples[k] {D_samples[k]}')
+            elbo_grad += (current - others) * var_posterior.score(S0_samples[k], D_samples[k])
+            #print(f'Score return value {var_posterior.score(S0_samples[k], D_samples[k])}')
+        elbo_grad /= K
+        #print(f'ELBO gradient: {elbo_grad}')
+
+        # Adam
+        m = b1 * m + (1-b1) * elbo_grad
+        v = b2 * v + (1-b2) * elbo_grad**2
+        m_hat = m / (1-b1**t)
+        v_hat = v / (1-b2**t)
+        theta += learning_rate * (m_hat / (np.sqrt(v_hat) + e))
+        #print(f'theta: {theta}')
+
+        # Update the posterior
+        var_posterior.set_theta(theta)
+
+        '''
+        # Extract theta_3 - theta_8 from D
+        theta_3_to_8 = theta_from_D(Sigma)
+        if SGD_iter % 10 == 0:
+            print(f'theta_3_to_8 after step: {theta_3_to_8}')
+            print(f'D at SGD iteration {SGD_iter}: {Sigma}')
+
+        # Update thetas with learning rate scaled ELBO gradient
+        theta_1 += learning_rate * elbo_grad[0]
+        theta_2 += learning_rate * elbo_grad[1]
+        for i in range(len(theta_3_to_8)):
+            theta_3_to_8[i] += learning_rate * elbo_grad[i+2]
+        theta_9 += learning_rate * elbo_grad[8]
+        '''
+    Sigma = D_from_theta(theta[2:8])
+    theta_1 = theta[0]
+    theta_2 = theta[1]
+    theta_9 = theta[8]
+
+    '''
+    theta_3_to_8 = theta_from_D(D)
+    print(f'theta_3_to_8 after step: {theta_3_to_8}')
+    print(f'D after step: {Sigma}')
+    print(f'Theta_1 after step: {theta_1}')
+    print(f'Theta_2 after step: {theta_2}')
+    print(f'Theta_9 after step: {theta_9}')
+    '''
+
+    return variational_posterior(Sigma, theta_1, theta_2, theta_9)
+
+#variational_inference(100, 20, 1e-3)
 
 @disk_memoize()
 def laplace_approximation():
@@ -609,233 +771,119 @@ def laplace_approximation():
     return mvn_reparameterized(...)
 
 
+"""
+=============================================================================
+Visualization & Experiment Runner
+=============================================================================
+Plotting function and the main() script to run experiments.
+"""
+
+def main():
+    # Initialize with preprocessed data and DTI point estimate
+    # (these values can be used as starting points for inference methods)
+    y, point_estimate, gtab = get_preprocessed_data(force_recompute=True)
+    S0_init, evals_init, evecs_init = point_estimate
+    D_init = compute_D(evals_init, evecs_init).squeeze()
+
+    # Find principal eigenvector from DTI estimate (for plotting)
+    evec_principal = evecs_init[:, 0]
+
+    # Set random seed and number of posterior samples
+    np.random.seed(0)
+    n_samples = 10000
+
+    '''
+    # Run Metropolis–Hastings and plot results
+    S0_mh, evals_mh, evecs_mh = metropolis_hastings(force_recompute=False)
+    burn_in = 0
+    plot_results(S0_mh[burn_in:], evals_mh[burn_in:], evecs_mh[burn_in:, :, :], evec_principal, method="mh")
+
+    # Run Importance Sampling and plot results
+    w_is, S0_is, evals_is, evecs_is = importance_sampling(force_recompute=False)
+    plot_results(S0_is, evals_is, evecs_is, evec_principal, weights=w_is, method="is")
+    ''' 
+
+    # Run Variational Inference and plot results
+    posterior_vi = variational_inference(max_iters=1000, K=20, learning_rate=1e-4, force_recompute=False)
+    S0_vi, evals_vi, evecs_vi = posterior_vi.rvs(size=n_samples)
+    plot_results(S0_vi, evals_vi, evecs_vi, evec_principal, method="vi")
+    '''
+    # Run Laplace Approximation and plot results
+    posterior_laplace = laplace_approximation(force_recompute=False)
+    S0_laplace, evals_laplace, evecs_laplace = posterior_laplace.rvs(size=n_samples)
+    plot_results(S0_laplace, evals_laplace, evecs_laplace, evec_principal, method="laplace")
+    ''' 
+    print("Done.")
 
 
-
-# --------------------------------------------------------------------------
-# Laplace: MVN in transformed space (theta = [log S0, chol(L) params...])
-# --------------------------------------------------------------------------
-
-class mvn_reparameterized:
+def plot_results(S0, evals, evecs, evec_ref, weights=None, method=""):
     """
-    Multivariate Normal over theta with helpers to map samples back to (S0, evals, evecs).
-    theta = [log S0, theta_L(6, Eq.18-order)]
+    Plot posterior results as histograms and save to file.
+
+    Creates histograms of baseline signal (S0), mean diffusivity (MD),
+    fractional anisotropy (FA), and the angle between estimated and
+    reference eigenvectors.
+
+    Parameters
+    ----------
+    S0 : ndarray
+        Sampled baseline signals.
+    evals : ndarray
+        Sampled eigenvalues of the diffusion tensor.
+    evecs : ndarray
+        Sampled eigenvectors of the diffusion tensor.
+    evec_ref : ndarray
+        Reference principal eigenvector (from point estimate).
+    weights : ndarray, optional
+        Importance weights for samples. Uniform if None.
+    method : str
+        Name of inference method (used in output filename).
     """
-    def __init__(self, theta_hat, Sigma, gtab, y, prior_hypers, q_cache=None):
-        self.theta_hat = np.asarray(theta_hat).reshape(-1)
-        self.Sigma = np.asarray(Sigma)
-        self.dim = self.theta_hat.size
+    
+    # Use uniform weights if none provided
+    if weights is None:
+        weights = np.ones_like(S0)
+        weights /= np.sum(weights)
 
-        # For mapping samples back to domain params & evaluating likelihood if needed
-        self.gtab = gtab
-        self.y = y
-        self.prior_hypers = prior_hypers
+    # Choose number of bins based on sample size
+    n_bins = np.floor(np.sqrt(len(weights))).astype(int)
 
-        # Precompute q = sqrt(b) * bvecs (used for simulating signal quickly)
-        if q_cache is None:
-            self.q = np.sqrt(self.gtab.bvals[:, None]) * self.gtab.bvecs
-        else:
-            self.q = q_cache
+    # Squeeze arrays for plotting
+    weights = weights.squeeze()
+    S0 = S0.squeeze()
+    md = dti.mean_diffusivity(evals).squeeze()
+    fa = dti.fractional_anisotropy(evals).squeeze()
 
-        # Backing MVN for logpdf over theta
-        self._mvn = multivariate_normal(mean=self.theta_hat, cov=self.Sigma, allow_singular=False)
+    # Compute acute angle between estimated and reference eigenvectors
+    angle = 360/(2*np.pi) * np.arccos(np.abs(np.dot(evecs[:, :, 2], evec_ref)))
+    
+    # Create 2x2 grid of histograms
+    fig, axes = plt.subplots(2, 2, figsize=(12, 12), sharey=False)
 
-    # ---------- utilities to go back and forth ----------
-    @staticmethod
-    def _theta_to_S0_D(theta):
-        theta = np.asarray(theta).reshape(-1)
-        S0 = np.exp(theta[0])
-        D = D_from_theta(theta[1:])  # uses your Eq. (18) helper
-        return S0, D
+    axes[0, 0].hist(S0, bins=n_bins, density=True, weights=weights, 
+                    alpha=0.7, color='red', edgecolor='black')
+    axes[0, 0].set_xlabel("S0")
+    axes[0, 0].set_ylabel("Density")
 
-    @staticmethod
-    def _D_to_eigendecomp(D):
-        # Eigen-decompose D to (evals,evecs) in descending order for consistency
-        evals, evecs = np.linalg.eigh(D)
-        idx = np.argsort(evals)[::-1]
-        return evals[idx], evecs[:, idx]
+    axes[0, 1].hist(md, bins=n_bins, density=True, weights=weights, 
+                    alpha=0.7, color='green', edgecolor='black')
+    axes[0, 1].set_xlabel("Mean diffusivity")
+    axes[0, 1].set_ylabel("Density")
 
-    # ---------- public API ----------
-    def logpdf(self, theta):
-        return self._mvn.logpdf(theta)
+    axes[1, 0].hist(fa, bins=n_bins, density=True, weights=weights,
+                     alpha=0.7, color='blue', edgecolor='black')
+    axes[1, 0].set_xlabel("Fractional anisotropy")
+    axes[1, 0].set_ylabel("Density")
 
-    def rvs(self, size=1, return_theta=False):
-        """
-        Draw samples in theta-space, then map to (S0, evals, evecs).
-        Returns:
-            S0_samples: (size,)
-            evals_samples: (size,3)
-            evecs_samples: (size,3,3)
-        Optionally returns the raw theta samples if return_theta=True.
-        """
-        thetas = self._mvn.rvs(size=size)
-        thetas = np.atleast_2d(thetas)
+    axes[1, 1].hist(angle, bins=n_bins, density=True, weights=weights, 
+                    alpha=0.7, color='magenta', edgecolor='black')
+    axes[1, 1].set_xlabel("Acute angle")
+    axes[1, 1].set_ylabel("Density")
 
-        S0_list, evals_list, evecs_list = [], [], []
-        for th in thetas:
-            S0, D = self._theta_to_S0_D(th)
-            evals, evecs = self._D_to_eigendecomp(D)
-            S0_list.append(S0)
-            evals_list.append(evals)
-            evecs_list.append(evecs)
-
-        S0_samples = np.array(S0_list)
-        evals_samples = np.stack(evals_list, axis=0)
-        evecs_samples = np.stack(evecs_list, axis=0)
-
-        if return_theta:
-            return S0_samples, evals_samples, evecs_samples, thetas
-        return S0_samples, evals_samples, evecs_samples
+    # Adjust layout and save figure with method name
+    plt.tight_layout()
+    plt.savefig("results_{}.png".format(method), dpi=300, bbox_inches='tight')
 
 
-# --------------------------------------------------------------------------
-# Laplace Approximation
-# --------------------------------------------------------------------------
-
-@disk_memoize()
-def laplace_approximation(
-    wishart_df=None,
-    wishart_scale=None,
-    gamma_alpha_s=2.0,
-    gamma_theta_s=500.0,
-    obs_sigma=29.0,
-    hess_eps=1e-4,
-    jitter=1e-6,
-    verbose=True,
-):
-    """
-    Builds a Laplace posterior q(theta)=N(theta_hat, Sigma) with:
-      - theta = [log S0, theta_L] where D = L L^T and L uses Eq.(18) parameterization
-      - prior: S0 ~ Gamma(gamma_alpha_s, scale=gamma_theta_s)
-               D ~ Wishart(df=wishart_df, scale=wishart_scale)
-      - likelihood: y_i ~ N(S0 * exp(-q_i^T D q_i), obs_sigma^2)
-
-    Returns
-    -------
-    approx : mvn_reparameterized
-        Distribution-like object with rvs() and logpdf().
-    """
-    # ---- data & a sensible Wishart prior centered near DTI estimate ----
-    S0_hat, evals_hat, evecs_hat, y, point_estimate, gtab = get_preprocessed_data()
-    D_hat = compute_D(evals_hat, evecs_hat).squeeze()
-    p = 3
-
-    if wishart_df is None:
-        wishart_df = p + 1  # weakly-informative minimal df
-    if wishart_scale is None:
-        # Use the DTI fit as a rough prior scale (acts like a prior "mean-ish")
-        wishart_scale = D_hat
-
-    # cache q = sqrt(b) * bvecs
-    q = np.sqrt(gtab.bvals[:, None]) * gtab.bvecs
-
-    # ---- helpers: prior, likelihood, posterior in theta-space ----
-    def log_prior_theta(theta):
-        S0, D = mvn_reparameterized._theta_to_S0_D(theta)
-        # Gamma prior on S0 (in S0-space; transform taken care of by using theta=log S0)
-        lp_S0 = gamma.logpdf(S0, a=gamma_alpha_s, scale=gamma_theta_s) + np.log(S0)  # +log|dS0/dθ0|=log S0
-
-        # Wishart prior on D
-        # scipy's wishart.logpdf expects symmetric PD; use 'scale' parameterization
-        lp_D = wishart.logpdf(D, df=wishart_df, scale=wishart_scale)
-
-        return lp_S0 + lp_D
-
-    def log_lik_theta(theta):
-        S0, D = mvn_reparameterized._theta_to_S0_D(theta)
-        # model S = S0 * exp( - q^T D q )
-        expo = -np.einsum('ij, jk, ik->i', q, D, q)
-        S = S0 * np.exp(expo)
-        return np.sum(norm.logpdf(y, loc=S, scale=obs_sigma))
-
-    def log_post(theta):
-        return log_prior_theta(theta) + log_lik_theta(theta)
-
-    # ---- initialize theta at a sane point (close to DTI fit) ----
-    theta_L0 = theta_from_D(D_hat)           # length-6 vector (Eq.18 order; you already provided this)
-    theta0 = np.concatenate([np.log([S0_hat]), theta_L0])  # length 7
-
-    # ---- optimize (maximize log posterior) ----
-    def neg_log_post(theta):
-        # scipy.minimize minimizes, so flip sign
-        return -log_post(theta)
-
-    res = minimize(
-        neg_log_post,
-        theta0,
-        method="L-BFGS-B",
-        options=dict(maxiter=500, ftol=1e-9),
-    )
-
-    if not res.success and verbose:
-        print("[Laplace] Warning: optimizer did not fully converge:", res.message)
-
-    theta_hat = res.x
-
-    # ---- numerical Hessian of log posterior at the mode (central differences) ----
-    def central_grad(f, x, eps=hess_eps):
-        x = np.asarray(x)
-        g = np.zeros_like(x)
-        for i in range(x.size):
-            e = np.zeros_like(x); e[i] = eps
-            g[i] = (f(x + e) - f(x - e)) / (2.0 * eps)
-        return g
-
-    def central_hess(f, x, eps=hess_eps):
-        x = np.asarray(x)
-        n = x.size
-        H = np.zeros((n, n))
-        # Use central differences on each pair (i,j)
-        for i in range(n):
-            ei = np.zeros(n); ei[i] = eps
-            for j in range(i, n):
-                ej = np.zeros(n); ej[j] = eps
-                fpp = f(x + ei + ej)
-                fpm = f(x + ei - ej)
-                fmp = f(x - ei + ej)
-                fmm = f(x - ei - ej)
-                H_ij = (fpp - fpm - fmp + fmm) / (4.0 * eps * eps)
-                H[i, j] = H_ij
-                H[j, i] = H_ij
-        return H
-
-    # Hessian of log posterior -> we need -H to invert (since Sigma = (-∇^2 log p)^-1)
-    H_logpost = central_hess(log_post, theta_hat, eps=hess_eps)
-
-    # Ensure positive definiteness of (-H) with a small jitter
-    neg_H = -H_logpost
-    # Symmetrize for safety
-    neg_H = 0.5 * (neg_H + neg_H.T)
-    neg_H += jitter * np.eye(neg_H.shape[0])
-
-    try:
-        # Prefer Cholesky-based inverse for stability
-        Lc = np.linalg.cholesky(neg_H)
-        Sigma = np.linalg.solve(Lc.T, np.linalg.solve(Lc, np.eye(neg_H.shape[0])))
-    except np.linalg.LinAlgError:
-        if verbose:
-            print("[Laplace] Cholesky failed, falling back to np.linalg.pinv.")
-        Sigma = np.linalg.pinv(neg_H)
-
-    # ---- package result as a distribution-like object ----
-    prior_hypers = dict(
-        gamma_alpha_s=gamma_alpha_s,
-        gamma_theta_s=gamma_theta_s,
-        wishart_df=wishart_df,
-        wishart_scale=wishart_scale,
-        obs_sigma=obs_sigma,
-    )
-    approx = mvn_reparameterized(theta_hat, Sigma, gtab, y, prior_hypers, q_cache=q)
-
-    if verbose:
-        S0_mode, D_mode = approx._theta_to_S0_D(theta_hat)
-        evals_mode, _ = approx._D_to_eigendecomp(D_mode)
-        print("[Laplace] Done.")
-        print(f"  theta_hat: {theta_hat}")
-        print(f"  S0_mode: {S0_mode:.3f}")
-        print(f"  evals_mode: {evals_mode}")
-
-    return approx
-
-
-
+if __name__ == "__main__":
+    main()

@@ -7,7 +7,7 @@ from functools import wraps
 
 # NumPy and Matplotlib: math and plotting
 import numpy as np
-from numpy.linalg import eig
+from numpy.linalg import eigh
 import matplotlib.pyplot as plt
 
 # SciPy: probability distributions, math functions, and optimization
@@ -417,51 +417,6 @@ class frozen_likelihood:
         
         return np.sum(logp)
 
-
-"""
-if __name__ == "__main__":
-    
-
-    # Input values for our r (location in the voxel)
-
-    variance = 29
-    S0, evals, evecs, y, point_estimate, gtab = get_preprocessed_data(force_recompute=True)
-
-
-    #Frozen prior
-    fp = frozen_prior(sigma=29, alpha_s=2, theta_s=500,alpha_lam=4, theta_lam=2.5e-4)
-
-    frozen_prior_loglik = fp.logpdf(S0, evals[0],evals[1], evals[2], V=None)
-    print("Frozen Prior Log-likelihood:", frozen_prior_loglik)
-    
-
-    sampler = frozen_prior()
-    # Draw one sample
-    V, gs, gl1,gl2, gl3 = sampler.rvs()
-    print("Sampled rotation (Euler angles):", V)
-    print("Sampled gamma_s:", gs)
-    print("Sampled gamma_lam_1:", gl1)
-    print("Sampled gamma_lam_2:", gl2)
-    print("Sampled gamma_lam_3:", gl3)
-
-    # Compute log probability density
-    logp = sampler.logpdf(gs, gl1,gl2, gl3, V)
-    print("Log PDF of sample:", logp)
-
-    # Draw multiple samples
-        for i in range(5):
-        V, gs, gl1,gl2,gl3 = sampler.rvs()
-        logp = sampler.logpdf(gs, gl1,gl2, gl3, V)
-
-        print(f"Sample {i+1}: gamma_s={gs:.3f}, gamma_lam_1={gl1:.6f}, gamma_lam_2={gl2:.6f}, gamma_lam_3={gl3:.6f} logp={logp:.3f}")
-
-
-    #Frozen likeliehood
-    fl = frozen_likelihood(gtab, y, point_estimate)
-    frozen_likelihood_loglik = fl.logpdf(S0, evecs, evals)
-    print("frozen_likelihood Log-likelihood:", frozen_likelihood_loglik)
-"""
-    
 """
 =============================================================================
 Posterior Approximations (need to be implemented)
@@ -473,6 +428,36 @@ corresponding inference methods below:
 
 They are NOT needed for Metropolis-Hastings or Importance Sampling.
 """
+
+
+# ==========================
+# θ helpers 
+# ==========================
+
+def pack_theta(S0, theta_D):
+    """θ = [log S0, theta_D(6,)] => shape (7,)"""
+    return np.concatenate([np.atleast_1d(np.log(S0)), np.asarray(theta_D).reshape(-1)])
+
+def unpack_theta(theta):
+    """From θ -> (S0, theta_D (6,), D)"""
+    theta = np.asarray(theta)
+    assert theta.shape[-1] == 7, "θ must be length 7: [log S0, 6 for D]."
+    logS0 = theta[..., 0]
+    theta_D = theta[..., 1:]
+    S0 = np.exp(logS0)
+    D = D_from_theta(theta_D)
+    return S0, theta_D, D
+
+def eig_from_D(D):
+    """Return evals (λ1..λ3), evecs (3x3) with descending eigenvalues."""
+    # np.linalg.eigh returns ascending; flip to descending for conventional DTI
+    vals, vecs = np.linalg.eigh(D)
+    idx = np.argsort(vals)[::-1]
+    vals = vals[idx]
+    vecs = vecs[:, idx]
+    return vals, vecs
+
+
 
 class variational_posterior:
     # Placeholder for variational posterior approximation.
@@ -505,7 +490,7 @@ class variational_posterior:
         # raise NotImplementedError
         S0_samples = np.random.gamma(self.shape, self.scale, size=size)
         D_samples = wishart.rvs(scale=self.Sigma, df=self.df, size=size)
-        evals_samples, evecs_samples = eig(D_samples)
+        evals_samples, evecs_samples = eigh(D_samples)
         #print(f'S0_sample = {S0_samples}')
         #print(f'D_sample = {D_samples}')
         #print(f'evals_sample = {evals_samples}')
@@ -545,40 +530,34 @@ class variational_posterior:
         digamma_sum = np.sum([digamma((self.df + 1 - j) / 2.0) for j in range(1, p+1)])
         score_wrt_log_df = ((self.df - 2) / 2) * (logdet_W - p * np.log(2) - logdet_Sigma - digamma_sum)
         return score_wrt_theta, score_wrt_log_df
-"""
-if __name__ == "__main__":
-    
-    # Input values for our r (location in the voxel)
-    S0, evals, evecs, y, point_estimate, gtab = get_preprocessed_data(force_recompute=True)
-    init_D = compute_D(evals,evecs).squeeze()
-    var_post = variational_posterior(init_D, 1, 1, 1)
-    S0_samples, D_samples = var_post.rvs()
-    var_post_logpdf = var_post.logpdf(S0_samples, D_samples)
-    print(f'Variational posterior log pdf: {var_post_logpdf}')
 
-    #Frozen prior
-    fp = frozen_prior(sigma=29, alpha_s=2, theta_s=500,alpha_lam=4, theta_lam=2.5e-4)
-
-    frozen_prior_loglik = fp.logpdf( S0, evals[0],evals[1], evals[2], V=None)
-    print("Frozen Prior Log-likelihood:", frozen_prior_loglik)
-        
-    #Frozen likeliehood
-    fl = frozen_likelihood(gtab, y, point_estimate)
-    frozen_likelihood_loglik = fl.logpdf(S0, evecs, evals)
-    print("frozen_likelihood Log-likelihood:", frozen_likelihood_loglik)
-"""
 
 class mvn_reparameterized:
-    # Placeholder for multivariate normal approximation.
-    # Hint: you may want to add input parameters to these methods.
-    
-    def __init__(self):
-        raise NotImplementedError
-    
-    def rvs(self, size):
-        raise NotImplementedError
-    
+
+    """
+    A Gaussian on θ ~ N(θ̂, Σ), but with helpers to sample/score either in θ-space
+    or mapped back to (S0, evals, evecs).
+    """
+    def __init__(self, mean, cov):
+        self.mean = mean
+        self.cov = cov
+        self.dist = multivariate_normal(mean=mean, cov=cov)
+
+    def rvs(self, size=1):
+        # Draw sample of theata after reparameterization
+        thetas = self.dist.rvs(size=size)
+        if thetas.ndim == 1:
+            thetas = thetas[None, :]
+
+        # go back to original params
+        S0_samples = np.exp(thetas[:, 0])   # since theta_1 = log S0
+        D_values = np.array([D_from_theta(theta[1:]) for theta in thetas])  # D_from_theta given as a help function by teacher
+        evals_samples = np.linalg.eigvalsh(D_values)
+        evecs_samples = np.array([np.linalg.eigh(Ds)[1] for Ds in D_values])
         return S0_samples, evals_samples, evecs_samples
+
+    def logpdf(self, theta):
+        return self.dist.logpdf(theta)
 
 
 """
@@ -588,6 +567,68 @@ Inference Methods (need to be implemented)
 Students: implement one method each (MH, IS, VI, or Laplace).
 Uses memoization to speed up repeated runs.
 """
+
+#Help functions:
+
+def build_log_posterior_theta(prior, like):
+    def logpost(theta):
+        S0, _, D = unpack_theta(theta)
+
+        # Ensure D is proper 3x3
+        D = np.asarray(D).reshape(3,3)
+
+        # Clamp eigenvalues slightly above 0 to avoid log(0) in priors
+        evals, evecs = eig_from_D(D)
+        evals = np.maximum(evals, 1e-12)
+
+        # Likelihood
+        lp_like = like.logpdf(S0=np.atleast_1d(max(S0, 1e-12)),
+                              evecs=evecs,
+                              evals=evals)
+
+        # Prior
+        lp_prior = prior.logpdf(gamma_s=max(S0, 1e-12),
+                                gamma_lam_1=evals[0],
+                                gamma_lam_2=evals[1],
+                                gamma_lam_3=evals[2],
+                                V=evecs)
+
+        return lp_like + lp_prior
+    return logpost
+
+def finite_diff_grad(f, x, eps=1e-4):
+    x = np.asarray(x, dtype=float)
+    g = np.zeros_like(x)
+    for i in range(x.size):
+        xp = x.copy(); xm = x.copy()
+        xp[i] += eps; xm[i] -= eps
+        g[i] = (f(xp) - f(xm)) / (2*eps)
+    return g
+
+
+def finite_diff_hessian(f, x, eps=1e-3):
+    """
+    Symmetric 2nd-order FD Hessian via gradient differences.
+    Slightly larger eps than gradient for stability.
+    """
+    x = np.asarray(x, dtype=float)
+    n = x.size
+    H = np.zeros((n, n), dtype=float)
+    f0 = f(x)
+    # Use gradient-based FD for diagonals/off-diagonals
+    for i in range(n):
+        ei = np.zeros(n); ei[i] = eps
+        gi_plus  = finite_diff_grad(f, x + ei, eps=eps/4)
+        gi_minus = finite_diff_grad(f, x - ei, eps=eps/4)
+        H[:, i] = (gi_plus - gi_minus) / (2*eps)
+    # Symmetrize to reduce numerical noise
+
+    
+    #print('H before Symmetrize: ', H)
+    H = 0.5*(H + H.T)
+    #print('H after Symmetrize: ', H)
+
+    return H
 
 
 @disk_memoize()
@@ -760,15 +801,69 @@ def variational_inference(max_iters, K, learning_rate):
 #variational_inference(100, 20, 1e-3)
 
 @disk_memoize()
-def laplace_approximation():
-    # Students: implement the Laplace Approximation here.
-    # Before starting, make sure the prior, likelihood and mvn_reparameterized are implemented.
-    # Note: you may change, add, or remove input parameters depending on your design
-    # (e.g. pass initialization values like those prepared in main()).
+def laplace_approximation(y, gtab, prior=None, init=None, variance=29, bounds=None):
+    """
+    Fits a Laplace approximation in θ-space and returns mvn_reparameterized.
 
-    raise NotImplementedError
+    Parameters
+    ----------
+    y, gtab : from data pipeline
+    prior : frozen_prior instance 
+    init  : optional dict with 'S0', 'evals', 'evecs' for initialization
+    variance : noise SD for likelihood (kept aligned with your frozen_likelihood default)
+    bounds : optional box constraints for θ (L-BFGS-B). If None, keep unconstrained.
 
-    return mvn_reparameterized(...)
+    Returns
+    -------
+    mvn_reparameterized(theta_hat, Sigma)
+    """
+    if prior is None:
+        prior = frozen_prior(sigma=variance)
+
+    like = frozen_likelihood(gtab=gtab, y=y, point_estimate=None, variance=variance)
+
+    # Initialization
+  
+    S0_0 = float(init['S0'])
+    evals_0 = np.asarray(init['evals'])
+    evecs_0 = np.asarray(init['evecs'])
+
+    D0 = compute_D(evals_0, evecs_0)
+    D0 = np.asarray(D0).reshape(3,3)       #ensure 3x3
+    theta_D0 = theta_from_D(D0)
+    theta0 = pack_theta(max(S0_0, 1e-12), theta_D0)  # floor S0
+
+    assert theta0.shape == (7,), f"Got wrong theta0 shape: {theta0.shape}" # Extra check
+
+
+    logpost = build_log_posterior_theta(prior, like)
+
+    def nlp(theta):
+        return -logpost(theta)
+
+    def nlp_grad(theta):
+        return -finite_diff_grad(logpost, theta, eps=1e-4)
+
+    # (Optional) simple bounds—often not necessary in theta space; left None by default
+    res = minimize(nlp, theta0, method='L-BFGS-B', jac=nlp_grad, bounds=bounds, options=dict(maxiter=500, ftol=1e-9, gtol=1e-7))
+
+    theta_hat = res.x
+
+    # Hessian at the mode (of -logpost); Σ = H⁻¹ where H = ∇²[-logpost](θ̂)
+    H = finite_diff_hessian(lambda th: -logpost(th), theta_hat, eps=1e-3)
+    #print('H: ', H)
+
+    # Regularize if needed (numerical guard)
+    # Ensure positive-definite by adding a tiny ridge if necessary
+    try:
+        # Try Cholesky to test PD-ness; add tiny jitter if it fails
+        np.linalg.cholesky(H)
+    except np.linalg.LinAlgError:
+        H = H + 1e-6 * np.eye(H.shape[0])
+
+    Sigma = np.linalg.inv(H)
+
+    return mvn_reparameterized(mean=theta_hat, cov=Sigma)
 
 
 """
@@ -804,15 +899,18 @@ def main():
     ''' 
 
     # Run Variational Inference and plot results
-    posterior_vi = variational_inference(max_iters=1000, K=20, learning_rate=1e-4, force_recompute=False)
+    posterior_vi = variational_inference(max_iters=1000, K=256, learning_rate=1e-4, force_recompute=False)
     S0_vi, evals_vi, evecs_vi = posterior_vi.rvs(size=n_samples)
     plot_results(S0_vi, evals_vi, evecs_vi, evec_principal, method="vi")
-    '''
+    
     # Run Laplace Approximation and plot results
-    posterior_laplace = laplace_approximation(force_recompute=False)
+    #S0, evals, evecs, y, point_estimate, gtab = get_preprocessed_data()
+    init = {"S0": S0_init, "evals": evals_init, "evecs": evecs_init}
+
+    posterior_laplace = laplace_approximation( y=y, gtab=gtab, init=init, force_recompute=False)
     S0_laplace, evals_laplace, evecs_laplace = posterior_laplace.rvs(size=n_samples)
     plot_results(S0_laplace, evals_laplace, evecs_laplace, evec_principal, method="laplace")
-    ''' 
+    
     print("Done.")
 
 

@@ -16,6 +16,8 @@ from scipy.stats import gamma, norm, wishart, multivariate_normal
 from scipy.spatial.transform import Rotation as R
 from scipy.special import logsumexp, digamma
 from scipy.optimize import minimize
+from scipy.special import gammaln
+
 
 # DIPY: diffusion MRI utilities and models
 from dipy.io.image import load_nifti, save_nifti   # for loading / saving imaging datasets
@@ -429,36 +431,6 @@ corresponding inference methods below:
 They are NOT needed for Metropolis-Hastings or Importance Sampling.
 """
 
-
-# ==========================
-# θ helpers 
-# ==========================
-
-def pack_theta(S0, theta_D):
-    """θ = [log S0, theta_D(6,)] => shape (7,)"""
-    return np.concatenate([np.atleast_1d(np.log(S0)), np.asarray(theta_D).reshape(-1)])
-
-def unpack_theta(theta):
-    """From θ -> (S0, theta_D (6,), D)"""
-    theta = np.asarray(theta)
-    assert theta.shape[-1] == 7, "θ must be length 7: [log S0, 6 for D]."
-    logS0 = theta[..., 0]
-    theta_D = theta[..., 1:]
-    S0 = np.exp(logS0)
-    D = D_from_theta(theta_D)
-    return S0, theta_D, D
-
-def eig_from_D(D):
-    """Return evals (λ1..λ3), evecs (3x3) with descending eigenvalues."""
-    # np.linalg.eigh returns ascending; flip to descending for conventional DTI
-    vals, vecs = np.linalg.eigh(D)
-    idx = np.argsort(vals)[::-1]
-    vals = vals[idx]
-    vecs = vecs[:, idx]
-    return vals, vecs
-
-
-
 class variational_posterior:
     # Placeholder for variational posterior approximation.
     # Hint: you may want to add input parameters to these methods.
@@ -568,79 +540,9 @@ Students: implement one method each (MH, IS, VI, or Laplace).
 Uses memoization to speed up repeated runs.
 """
 
-#Help functions:
-
-def build_log_posterior_theta(prior, like):
-    def logpost(theta):
-        S0, _, D = unpack_theta(theta)
-
-        # Ensure D is proper 3x3
-        D = np.asarray(D).reshape(3,3)
-
-        # Clamp eigenvalues slightly above 0 to avoid log(0) in priors
-        evals, evecs = eig_from_D(D)
-        evals = np.maximum(evals, 1e-12)
-
-        # Likelihood
-        lp_like = like.logpdf(S0=np.atleast_1d(max(S0, 1e-12)),
-                              evecs=evecs,
-                              evals=evals)
-
-        # Prior
-        lp_prior = prior.logpdf(gamma_s=max(S0, 1e-12),
-                                gamma_lam_1=evals[0],
-                                gamma_lam_2=evals[1],
-                                gamma_lam_3=evals[2],
-                                V=evecs)
-
-        return lp_like + lp_prior
-    return logpost
-
-def finite_diff_grad(f, x, eps=1e-4):
-    x = np.asarray(x, dtype=float)
-    g = np.zeros_like(x)
-    for i in range(x.size):
-        xp = x.copy(); xm = x.copy()
-        xp[i] += eps; xm[i] -= eps
-        g[i] = (f(xp) - f(xm)) / (2*eps)
-    return g
-
-
-def finite_diff_hessian(f, x, eps=1e-3):
-    """
-    Symmetric 2nd-order FD Hessian via gradient differences.
-    Slightly larger eps than gradient for stability.
-    """
-    x = np.asarray(x, dtype=float)
-    n = x.size
-    H = np.zeros((n, n), dtype=float)
-    f0 = f(x)
-    # Use gradient-based FD for diagonals/off-diagonals
-    for i in range(n):
-        ei = np.zeros(n); ei[i] = eps
-        gi_plus  = finite_diff_grad(f, x + ei, eps=eps/4)
-        gi_minus = finite_diff_grad(f, x - ei, eps=eps/4)
-        H[:, i] = (gi_plus - gi_minus) / (2*eps)
-    # Symmetrize to reduce numerical noise
-
-    
-    #print('H before Symmetrize: ', H)
-    H = 0.5*(H + H.T)
-    #print('H after Symmetrize: ', H)
-
-    return H
-
-
 @disk_memoize()
-def metropolis_hastings(n_samples, gamma_param, nu_param, plot_traces=False):
-    # Students: implement Metropolis-Hastings here.
-    # Before starting, make sure the prior and likelihood are implemented.
-    # Note: you may change, add, or remove input parameters depending on your design
-    # (e.g. pass initialization values like those prepared in main()).
-
+def metropolis_hastings():
     raise NotImplementedError
-
-    return S0_samples, evals_samples, evecs_samples
 
 
 @disk_memoize()
@@ -668,7 +570,6 @@ def variational_inference(max_iters, K, learning_rate):
     y, point_estimate, gtab = get_preprocessed_data(force_recompute=True)
     S0_init, evals_init, evecs_init = point_estimate
     D_ref = compute_D(evals_init, evecs_init).squeeze() # Compute D from initial evals and evecs
-    nu = 8
     theta_1 = 3
     theta_2 = 3
     theta_9 = 3
@@ -696,13 +597,6 @@ def variational_inference(max_iters, K, learning_rate):
     fro_prior = frozen_prior() # Initialize frozen_prior class
     fro_likelihood = frozen_likelihood(gtab, y, point_estimate, variance=29) # Initialize frozen_likelihood class
 
-    # print(f'gtab b-values {gtab.bvals}')
-    #print(f'S0_samples = {S0_samples}')
-    #print(f'D_samples = {D_ref}')
-    #print(f'Sigma = {Sigma}')
-    #print(f'evals_samples = {evals_samples}')
-    #print(f'evecs_samples = {evecs_samples}')
-
     for SGD_iter in range(max_iters):
         """
         Do 'max_iters' iterations of sampling from prior,likelihood, and variational posterior,
@@ -711,7 +605,6 @@ def variational_inference(max_iters, K, learning_rate):
         t +=1
         # Posterior must be updated when theta is updated (can do in var_posterior). Create set_theta function that you use in adam step
 
-        #print(f'Starting iteration {SGD_iter} of SGD')
         # Draw z samples from variational posterior
         S0_samples, evals_samples, evecs_samples = var_posterior.rvs(size=K)
         D_samples = compute_D(evals_samples, evecs_samples)
@@ -730,32 +623,20 @@ def variational_inference(max_iters, K, learning_rate):
 
             # Sample variational posterior
             log_var_post_sample_list[i] = var_posterior.logpdf(S0_samples[i], D_samples[i])
-
-        #print(f'Log prior samples: {log_prior_sample_list}')
-        #print(f'Log likelihood samples: {log_likelihood_sample_list}')
-        #print(f'Log variational posterier samples: {log_var_post_sample_list}')
         
         # Compute log p(D,z) for each sample
-        #log_p_of_D_and_z = [likelihood + prior for likelihood, prior in zip(log_likelihood_sample_list, log_prior_sample_list)]
         log_p_of_D_and_z = log_likelihood_sample_list + log_prior_sample_list
-        #print(f'PDF of D and z samples: {log_p_of_D_and_z}')
         
         # Compute f(z) for each sample
-        #f_z_samples = [p_D_z - p_q for p_D_z, p_q in zip(log_p_of_D_and_z, log_var_post_sample_list)]
         f_z_samples = log_p_of_D_and_z - log_var_post_sample_list
-        #print(f'f(z) samples: {f_z_samples}')
 
         # Estimate the gradient of ELBO using the REINFORCE leave-one-out estimator
         elbo_grad = 0
         for k in range(K):
             current = f_z_samples[k]
             others = (sum(f_z_samples) - current) / (K-1)
-            #print(f'S0_samples[k] {S0_samples[k]}')
-            #print(f'D_samples[k] {D_samples[k]}')
             elbo_grad += (current - others) * var_posterior.score(S0_samples[k], D_samples[k])
-            #print(f'Score return value {var_posterior.score(S0_samples[k], D_samples[k])}')
         elbo_grad /= K
-        #print(f'ELBO gradient: {elbo_grad}')
 
         # Adam
         m = b1 * m + (1-b1) * elbo_grad
@@ -763,42 +644,17 @@ def variational_inference(max_iters, K, learning_rate):
         m_hat = m / (1-b1**t)
         v_hat = v / (1-b2**t)
         theta += learning_rate * (m_hat / (np.sqrt(v_hat) + e))
-        #print(f'theta: {theta}')
 
         # Update the posterior
         var_posterior.set_theta(theta)
 
-        '''
-        # Extract theta_3 - theta_8 from D
-        theta_3_to_8 = theta_from_D(Sigma)
-        if SGD_iter % 10 == 0:
-            print(f'theta_3_to_8 after step: {theta_3_to_8}')
-            print(f'D at SGD iteration {SGD_iter}: {Sigma}')
-
-        # Update thetas with learning rate scaled ELBO gradient
-        theta_1 += learning_rate * elbo_grad[0]
-        theta_2 += learning_rate * elbo_grad[1]
-        for i in range(len(theta_3_to_8)):
-            theta_3_to_8[i] += learning_rate * elbo_grad[i+2]
-        theta_9 += learning_rate * elbo_grad[8]
-        '''
     Sigma = D_from_theta(theta[2:8])
     theta_1 = theta[0]
     theta_2 = theta[1]
     theta_9 = theta[8]
 
-    '''
-    theta_3_to_8 = theta_from_D(D)
-    print(f'theta_3_to_8 after step: {theta_3_to_8}')
-    print(f'D after step: {Sigma}')
-    print(f'Theta_1 after step: {theta_1}')
-    print(f'Theta_2 after step: {theta_2}')
-    print(f'Theta_9 after step: {theta_9}')
-    '''
-
     return variational_posterior(Sigma, theta_1, theta_2, theta_9)
 
-#variational_inference(100, 20, 1e-3)
 
 @disk_memoize()
 def laplace_approximation(y, gtab, prior=None, init=None, variance=29, bounds=None):
@@ -887,17 +743,18 @@ def main():
     np.random.seed(0)
     n_samples = 10000
 
-    '''
+    """
     # Run Metropolis–Hastings and plot results
     S0_mh, evals_mh, evecs_mh = metropolis_hastings(force_recompute=False)
-    burn_in = 0
+    burn_in = 2000
     plot_results(S0_mh[burn_in:], evals_mh[burn_in:], evecs_mh[burn_in:, :, :], evec_principal, method="mh")
-
+    """
+    '''
     # Run Importance Sampling and plot results
     w_is, S0_is, evals_is, evecs_is = importance_sampling(force_recompute=False)
     plot_results(S0_is, evals_is, evecs_is, evec_principal, weights=w_is, method="is")
     ''' 
-
+    
     # Run Variational Inference and plot results
     posterior_vi = variational_inference(max_iters=1000, K=256, learning_rate=1e-4, force_recompute=False)
     S0_vi, evals_vi, evecs_vi = posterior_vi.rvs(size=n_samples)
@@ -906,11 +763,11 @@ def main():
     # Run Laplace Approximation and plot results
     #S0, evals, evecs, y, point_estimate, gtab = get_preprocessed_data()
     init = {"S0": S0_init, "evals": evals_init, "evecs": evecs_init}
-
+    '''
     posterior_laplace = laplace_approximation( y=y, gtab=gtab, init=init, force_recompute=False)
     S0_laplace, evals_laplace, evecs_laplace = posterior_laplace.rvs(size=n_samples)
     plot_results(S0_laplace, evals_laplace, evecs_laplace, evec_principal, method="laplace")
-    
+    '''
     print("Done.")
 
 
